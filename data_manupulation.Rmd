@@ -1,0 +1,371 @@
+---
+title: "Data processing fot NHANES accelerometer data 2011_14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages({
+library(haven)
+library(httpuv)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(foreign)
+library(RNHANES)
+library(rvest)
+library(devtools)
+library(lavaan)
+library(scales)
+library(lubridate)
+library(tidyverse)
+library(data.table)
+})
+```
+
+Step 1. Read in data and select relevant cases/variables
+**2011_2012 Accelerometer**
+After eligible participants consented, there might be further deletion by selecting valid individuals (no data loss, meet sufficient criteria)
+
+# HPC PATH
+```{r, eval=T}
+# Read in survey data to select eligible cases
+nhanes_clean<-read.csv("/home/dsuolang/Data/NHANES_survey_2011_12/nhanes_clean.csv")
+nhanes_clean_pax<-subset(nhanes_clean, nhanes_clean$pax_status==1)
+
+pax_min<-foreign::read.xport("/home/dsuolang/Data/NHANES_accelerometer_2011_12/PAXMIN_G.XPT")[, c('SEQN', 'PAXDAYM','PAXMTSM','PAXPREDM','PAXQFM','PAXFLGSM','PAXSSNMP')]%>%filter(SEQN %in% nhanes_clean_pax$seqn)
+pax_header <- foreign::read.xport("/home/dsuolang/Data/NHANES_accelerometer_2011_12/PAXHD_G.XPT")[, c('SEQN', 'PAXFTIME')] %>%filter(SEQN %in% pax_min$SEQN)
+
+nhanes_acc2011_12<- merge(pax_header,pax_min,by = "SEQN")
+```
+#Local PATH
+```{r, eval=F}
+nhanes_clean<-read_csv("/Users/dsuolang/Desktop/Data/NHANES_survey_2011_12/nhanes_clean.csv",show_col_types = FALSE)
+# Select first 15 people as a test, remove head() in actual analysis
+nhanes_clean_pax<-head(subset(nhanes_clean, nhanes_clean$pax_status==1),15)
+
+pax_min<-foreign::read.xport("/Users/dsuolang/Desktop/Data/NHANES_accelerometer_2011_12/PAXMIN_G.XPT")[, c('SEQN', 'PAXDAYM','PAXMTSM','PAXPREDM','PAXQFM','PAXFLGSM','PAXSSNMP')]%>%filter(SEQN %in% nhanes_clean_pax$seqn)
+pax_header <- foreign::read.xport("/Users/dsuolang/Desktop/Data/NHANES_accelerometer_2011_12/PAXHD_G.XPT")[, c('SEQN', 'PAXFTIME')] %>%filter(SEQN %in% pax_min$SEQN)
+nhanes_acc2011_12<- merge(pax_header,pax_min,by = "SEQN")
+```
+**2013_2014 Accelerometer**
+# HPC PATH
+```{r, eval=T}
+nhanes_clean<-read.csv("/home/dsuolang/Data/NHANES_survey_2013_14/nhanes_clean.csv")
+# Select first 15 people as a test, remove head() in actual analysis
+nhanes_clean_pax<-subset(nhanes_clean, nhanes_clean$pax_status==1)
+
+pax_min<-foreign::read.xport("/home/dsuolang/Data/NHANES_accelerometer_2013_14/PAXMIN_H.XPT")[, c('SEQN', 'PAXDAYM','PAXMTSM','PAXPREDM','PAXQFM','PAXFLGSM','PAXSSNMP')]%>%filter(SEQN %in% nhanes_clean_pax$seqn)
+pax_header <- foreign::read.xport("/home/dsuolang/Data/NHANES_accelerometer_2013_14/PAXHD_H.XPT")[, c('SEQN', 'PAXFTIME')] %>%filter(SEQN %in% pax_min$SEQN)
+nhanes_acc2013_14<- merge(pax_header,pax_min,by = "SEQN")
+```
+#Local PATH
+```{r, eval=F}
+nhanes_clean<-read_csv("/Users/dsuolang/Desktop/Data/NHANES_survey_2013_14/nhanes_clean.csv",show_col_types = FALSE)
+# Select first 15 people as a test, remove head() in actual analysis
+nhanes_clean_pax<-head(subset(nhanes_clean, nhanes_clean$pax_status==1),15)
+
+pax_min<-foreign::read.xport("/Users/dsuolang/Desktop/Data/NHANES_accelerometer_2013_14/PAXMIN_H.XPT")[, c('SEQN', 'PAXDAYM','PAXMTSM','PAXPREDM','PAXQFM','PAXFLGSM','PAXSSNMP')]%>%filter(SEQN %in% nhanes_clean_pax$seqn)
+pax_header <- foreign::read.xport("/Users/dsuolang/Desktop/Data/NHANES_accelerometer_2013_14/PAXHD_H.XPT")[, c('SEQN', 'PAXFTIME')] %>%filter(SEQN %in% pax_min$SEQN)
+nhanes_acc2013_14<- merge(pax_header,pax_min,by = "SEQN")
+```
+
+```{r}
+nhanes_acc<- rbind(nhanes_acc2011_12, nhanes_acc2013_14)
+saveRDS(nhanes_acc, "nhanes_acc.rds")
+```
+
+Step 2. Data Manipulations
+```{r}
+# create a time stamp for every minute, 80hz per second
+nhanes_acc$second_position<-nhanes_acc$PAXSSNMP/80
+#nhanes_acc$minute_position<-nhanes_acc$second_position/60, increment based on second position.
+nhanes_acc <- nhanes_acc %>%
+  group_by(SEQN) %>%
+  mutate(TIMESTAMP = as.POSIXct(paste("2011-01-01", PAXFTIME), format = "%Y-%m-%d %H:%M:%S")+ second_position) %>%
+  ungroup()
+
+# choose to only use the accelerometer data from the first 7 full days of wear time, starting from the first timestamp at midnight. 
+nhanes_acc <- nhanes_acc[nhanes_acc$PAXDAYM != 1, ]
+nhanes_acc$FULLDAY<-as.numeric(nhanes_acc$PAXDAYM)-1 #delete the first day as it is not a full day
+# delete the cases after 7 full days
+nhanes_acc<-subset(nhanes_acc, nhanes_acc$FULLDAY<=7)
+
+nhanes_acc <- nhanes_acc %>% 
+  mutate(FLAG = if_else(PAXQFM == 0, 0, 1)) %>% # recode quality flag
+  rename(MIMS=PAXMTSM, MODE=PAXPREDM)%>%
+  select(-starts_with("PAX")) # delete variables not selected 
+
+nhanes_acc <-select(nhanes_acc , SEQN, FULLDAY, TIMESTAMP, MODE, FLAG,MIMS)
+```
+
+```{r}
+colnames(nhanes_acc)<-tolower(colnames(nhanes_acc))
+nhanes_acc_clean<-nhanes_acc
+
+## Define a function to have complete time sequence
+create_complete_sequence <- function(data_group) {
+  start_time <- min(data_group$timestamp)
+  end_time <- start_time + (10080-1)*60
+  sequence_time <- seq(from = start_time, to = end_time, by = "1 min")
+  complete_sequence <- data.frame(timestamp = sequence_time)
+  complete_sequence$seqn <- rep(unique(data_group$seqn), each = length(sequence_time))
+  return(complete_sequence)
+}
+
+# Apply the function to each group and combine the data back together
+complete_sequence <- nhanes_acc %>%
+  group_by(seqn) %>%
+  do(create_complete_sequence(.))
+
+nhanes_acc_clean<-left_join(complete_sequence, nhanes_acc_clean, by = c("seqn", "timestamp"))
+
+# handle the missing data because of the new sequence added
+nhanes_acc_clean$mode<-ifelse(is.na(nhanes_acc_clean$mode), 5, is.na(nhanes_acc_clean$mode))  # mode==5
+nhanes_acc_clean$flag<-ifelse(is.na(nhanes_acc_clean$flag), 0, is.na(nhanes_acc_clean$flag))  # flag=0
+nhanes_acc_clean <- nhanes_acc_clean %>% 
+  mutate(fullday = ifelse(is.na(fullday), as.numeric(format(timestamp, "%d")) - 1, 
+                          fullday))
+table(nhanes_acc_clean$fullday) # check there is no missing values, other than MIMS
+```
+
+```{r}
+# set the mims value to NA if trigger flags
+nhanes_acc_clean$mims<-ifelse(nhanes_acc_clean$flag==1, NA, nhanes_acc_clean$mims)
+# set the mims value to NA if it non-wear mode
+nhanes_acc_clean$mims<-ifelse(nhanes_acc_clean$mode==3, NA, nhanes_acc_clean$mims)
+sum(!is.na(nhanes_acc_clean$mims))
+
+# Create a list with nhanes_acc_clean$seqn, save the list as an RDS file
+consenter_id<-list(unique(nhanes_acc_clean$seqn))
+# Save the list as an RDS file
+saveRDS(consenter_id, file = "consenter_id.rds")
+```
+
+Step 3. Further selected cases
+```{r}
+# select cases that have more than 4 days,and 10hr per day data
+hour_counts <- nhanes_acc_clean %>%
+  mutate(hour = hour(timestamp)) %>% 
+  group_by(seqn, fullday) %>%
+  summarise(hour_counts = n_distinct(hour))
+table(hour_counts$hour_counts)
+filtered_ids<-hour_counts%>%
+  group_by(seqn)%>%
+  filter(n()>=4, sum(hour_counts>=10)>=4)%>%
+  distinct(seqn)
+
+nhanes_acc_clean <- nhanes_acc_clean %>%filter(seqn %in% filtered_ids$seqn)
+length(unique(nhanes_acc_clean$seqn))
+# Use the group_by and summaries functions to count rows per unique ID
+nhanes_acc_clean %>%
+  group_by(seqn) %>%
+  summarise(Count = n())
+```
+
+Step 4: Eliminate extreme values
+```{r, eval=T}
+# Calculate the 0.99 quantile
+quantile_99 <- quantile(nhanes_acc_clean$mims, probs = 0.99, na.rm=T)
+# Replace values exceeding the 0.999 quantile with the quantile value
+nhanes_acc_clean$mims <- ifelse(nhanes_acc_clean$mims > quantile_99, quantile_99, nhanes_acc_clean$mims)
+
+summary(nhanes_acc_clean$mims)
+sum(is.na(nhanes_acc_clean$mims))
+```
+
+Step 5: MIMS >> AC mapping
+```{r}
+# Mapping AC to the data (Karas et al, 2022)
+# read data with GAM-fitted values
+fpath_tmp <- "https://raw.githubusercontent.com/muschellij2/blsa_mims/master/results_public/mapping_between_measures_FITTED.txt"
+dat_fitted <- fread(fpath_tmp) 
+
+# ------------------------------------------------------------------------------
+# mapping g: {MIMS, ENMO, MAD, AI} -> AC
+
+# define data tables based on pre-computed values for fast reference mapping
+# MIMS 
+
+MIMS_to_AC_dt <- dat_fitted %>% select(AC, merge = MIMS_fitted) %>% as.data.table()
+setkeyv(MIMS_to_AC_dt, c("merge"))
+MIMS_to_AC_map <- function(x){
+  x_dt = data.table(MIMS = x, obs_id = 1 : length(x))
+  x_dt[, merge := MIMS]; setkeyv(x_dt, c("merge"))
+  x_dt_merged = MIMS_to_AC_dt[x_dt, roll = 'nearest']
+  x_dt_merged = x_dt_merged[order(obs_id), ]
+  out <- x_dt_merged[, get(names(x_dt_merged)[1])]
+  return(out)
+}
+
+nhanes_acc_clean <- nhanes_acc_clean %>%
+  mutate(ac_fitted = MIMS_to_AC_map(mims))
+
+plot(nhanes_acc_clean$ac_fitted, nhanes_acc_clean$mims)
+```
+
+Step 6: Create summary statistics
+```{r}
+# Recode AC values into activity levels (Freedson Adult VM3)
+nhanes_acc_clean$intensity_status <- ifelse(
+    nhanes_acc_clean$ac_fitted < 2690, "other",
+    ifelse(nhanes_acc_clean$ac_fitted < 6167, "moderate", "vigorous")
+  )
+
+nhanes_acc_clean$mvpa_status <- ifelse(nhanes_acc_clean$intensity_status  == "moderate" | nhanes_acc_clean$intensity_status =="vigorous", "mvpa", "nonmvpa")
+
+# bout sequence
+nhanes_acc_clean<-nhanes_acc_clean%>%
+  group_by(seqn) %>%
+  mutate(intensity_seq = cumsum(intensity_status!= lag(intensity_status , default = first(intensity_status)))) %>%
+  group_by(seqn, intensity_seq) %>%
+  mutate(intensity_duration = n())%>%
+  ungroup()
+
+nhanes_acc_clean<-nhanes_acc_clean%>%  
+  group_by(seqn) %>%
+  mutate(mvpa_seq = cumsum(mvpa_status!= lag(mvpa_status, default = first(mvpa_status)))) %>%
+  group_by(seqn, mvpa_seq) %>%
+  mutate(mvpa_duration = n())%>%
+  ungroup()
+
+# Create duration variable that last 10 mins
+nhanes_acc_clean <- nhanes_acc_clean %>%
+  group_by(seqn, intensity_seq) %>%
+  mutate(modpa_bout_status = ifelse(intensity_status == "moderate" & intensity_duration >= 10, 1, 0)) %>%
+  mutate(vigpa_bout_status = ifelse(intensity_status == "vigorous" & intensity_duration >= 10, 1, 0)) %>%
+  ungroup()%>%
+  group_by(seqn, mvpa_seq) %>%
+  mutate(mvpa_bout_status = ifelse(mvpa_status == "mvpa" & mvpa_duration >= 10, 1, 0)) %>%
+  ungroup()
+```
+END OF DATA MANAGEMENT
+
+Summary statistics
+```{r}
+modpa_total_acc<-nhanes_acc_clean%>%group_by(seqn)%>%summarize(modpa_total_acc = sum(modpa_bout_status))
+vigpa_total_acc<-nhanes_acc_clean%>%group_by(seqn)%>%summarize(vigpa_total_acc = sum(vigpa_bout_status))
+#mvpa_total_acc<-nhanes_acc_clean%>%group_by(seqn)%>%summarize(mvpa_total_acc = sum(mvpa_bout_status))
+
+# PAM estimates (unweighted)
+mean(modpa_total_acc$modpa_total_acc)
+mean(vigpa_total_acc$vigpa_total_acc)
+```
+
+```{r, eval=T}
+pam_clean<-merge(modpa_total_acc, vigpa_total_acc, by='seqn')
+#pam_clean<-merge(pam_clean, mvpa_duration_acc, by='seqn')
+#saveRDS(pam_clean, file='pam_clean.rds')
+```
+
+Step 7: Functional Principal Analysis Data Preparation
+Apply Fourier basis functions to decompose the mean activity data and fit a functional curve that represents a smoothed activity profile. Fourier basis is chosen for data sampled in fixed frequency, functional principal component (fPC) scores were returned after performing fPCA on the smoothed activity profiles from all participants. Each fPC score was standardized by sample mean and variance
+#imputing NA values in acc data
+```{r}
+# Assuming 'time' is the time variable and 'value' is the accelerometer reading
+library(zoo)
+#tail(nhanes_acc_clean,10)
+#head<-nhanes_acc_clean[nhanes_acc_clean$timestamp=='2011-01-02 00:00:00',]
+#tail<-nhanes_acc_clean[nhanes_acc_clean$timestamp=='2011-01-08 23:59:00',]
+#colSums(is.na(tail))
+#nhanes_acc_clean$mims_fitted <- na.approx(nhanes_acc_clean$mims)
+nhanes_acc_clean<- nhanes_acc_clean%>%
+  group_by(seqn)%>%
+  mutate(mims_fitted = na.approx(mims, rule=2))%>%
+  ungroup()
+summary(nhanes_acc_clean$mims_fitted)
+
+colSums(is.na(nhanes_acc_clean))
+nhanes_acc_clean$mims_fitted<-ifelse(nhanes_acc_clean$mims_fitted<0, 0, nhanes_acc_clean$mims_fitted)
+summary(nhanes_acc_clean$mims)
+summary(nhanes_acc_clean$mims_fitted)
+saveRDS(nhanes_acc_clean, file = "nhanes_acc_clean.rds")
+```
+ 
+```{r, eval=F}
+#1-min epoch
+colSums(is.na(nhanes_acc_clean))
+nhanes_acc_clean2 <- nhanes_acc_clean[c("seqn", "timestamp", "fullday","mims_fitted")]
+names(nhanes_acc_clean2)[names(nhanes_acc_clean2)=='mims_fitted']<-'activity_avg'
+
+nhanes_acc_clean2 <- nhanes_acc_clean2 %>%
+  group_by(seqn, fullday) %>%
+  mutate(onemin = row_number())%>%
+  ungroup() 
+
+head(nhanes_acc_clean2)
+nhanes_acc_clean2$SEQN<-nhanes_acc_clean2$seqn
+nhanes_acc_clean2$day<-nhanes_acc_clean2$fullday
+nhanes_acc_clean2$seqn<-NULL
+nhanes_acc_clean2$timestamp<-NULL
+nhanes_acc_clean2$fullday<-NULL
+sum(is.na(nhanes_acc_clean2$activity_avg))
+saveRDS(nhanes_acc_clean2, file = "nhanes_acc_clean2.rds")
+```
+
+```{r}
+#10-min epoch
+nhanes_acc_clean$timestamp<-as.POSIXct(nhanes_acc_clean$timestamp)
+nhanes_acc_clean2 <- nhanes_acc_clean %>%
+  group_by(seqn, epoch = floor_date(timestamp, "10 minutes")) %>%
+  summarise(activity_avg = mean(mims_fitted)) %>%
+  ungroup() 
+
+nhanes_acc_clean2 <- merge(nhanes_acc_clean2, nhanes_acc_clean[c("seqn", "timestamp", "fullday")], by.x = c("seqn", "epoch"), by.y = c("seqn", "timestamp"), all.x = TRUE)
+
+nhanes_acc_clean2 <- nhanes_acc_clean2 %>%
+  group_by(seqn, fullday) %>%
+  mutate(tenmin = row_number())%>%
+  ungroup() 
+
+nhanes_acc_clean2$SEQN<-nhanes_acc_clean2$seqn
+nhanes_acc_clean2$day<-nhanes_acc_clean2$fullday
+nhanes_acc_clean2$epoch<-NULL
+nhanes_acc_clean2$seqn<-NULL
+nhanes_acc_clean2$fullday<-NULL
+sum(is.na(nhanes_acc_clean2$activity_avg))
+saveRDS(nhanes_acc_clean2, file = "nhanes_acc_clean2_10min.rds")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Step n: Visualization
+```{r, eval=F}
+# plot MIMS vs timestamp - week
+ggplot(nhanes_acc_clean, aes(x = timestamp, y = mims)) +
+  geom_point(alpha = 0.5, color = "lightblue", shape=1) +
+  stat_smooth(size = 0.5, method = "loess", span = 0.01, color = "red",se = FALSE ) +
+  labs(x = "Time",
+       y = "MIMS Value") +
+  ylim(0, 40) +
+  scale_x_continuous(breaks = seq(min(nhanes_acc_clean$timestamp), max(nhanes_acc_clean$timestamp), by = 86400),
+                     labels = paste0("Day ", 1:7))+
+  theme(axis.text.x = element_text(hjust =-1), panel.background = element_rect(fill = "white"))
+
+# plot MIMS vs timestamp - day
+ggplot(nhanes_acc_clean, aes(x = timestamp, y = ac_fitted)) +
+  geom_point(alpha = 0.5, color = "green", shape=1) +
+  stat_smooth(size = 0.5, method = "loess", span = 0.01, color = "orange",se = FALSE ) +
+  labs(x = "Time",
+       y = "MIMS Value") +
+  scale_x_datetime(date_breaks = "3 hour", labels = function(x) format(x, "%H:%M"), 
+                   limits = as.POSIXct(c("2011-01-01 00:00:00", "2021-01-02 00:00:00")),
+                   expand = c(0,0))+
+  theme(axis.text.x = element_text(hjust = 0.9), panel.background = element_rect(fill = "white")) 
+```
